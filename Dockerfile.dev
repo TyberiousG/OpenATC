@@ -1,0 +1,12 @@
+# Development image for the OpenATC monorepo (server + web).
+FROM node:20-alpine
+WORKDIR /app
+
+# Install dependencies first for better layer caching.
+COPY package.json package-lock.json* ./
+COPY packages ./packages
+COPY apps ./apps
+RUN npm install
+
+EXPOSE 5173 8080
+CMD ["npm", "run", "dev"]

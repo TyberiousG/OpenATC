@@ -1,0 +1,42 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: openatc
+      POSTGRES_PASSWORD: openatc
+      POSTGRES_DB: openatc
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openatc"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://openatc:openatc@db:5432/openatc
+      PORT: "8080"
+      # Vite must bind all interfaces to be reachable from the host browser.
+      HOST: "0.0.0.0"
+    command: >
+      sh -c "npm run dev -w @openatc/server &
+             npm run dev -w @openatc/web -- --host 0.0.0.0"
+    ports:
+      - "5173:5173"
+      - "8080:8080"
+    volumes:
+      - ./packages:/app/packages
+      - ./apps:/app/apps
+      - /app/node_modules
+
+volumes:
+  db_data:
