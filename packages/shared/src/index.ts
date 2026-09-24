@@ -46,12 +46,34 @@ export interface AircraftSnapshot {
   /** Approach clearance state, for the data block. */
   approachRunway: string | null;
   approachEstablished: boolean;
+  /** Separation alert level this aircraft is involved in. */
+  alert: "none" | "warning" | "violation";
+  /** Movement phase; anything other than "airborne" is on the ground. */
+  phase: "ramp" | "taxi" | "hold" | "takeoff" | "airborne";
+}
+
+/** Running session score / operational counters. */
+export interface SessionStats {
+  landings: number;
+  departures: number;
+  /** Distinct loss-of-separation events. */
+  violations: number;
+  /** Aircraft currently in a predicted or actual conflict. */
+  activeAlerts: number;
 }
 
 export interface PositionDTO {
   id: string;
   label: string;
   frequency: string;
+}
+
+/** Surface diagram geometry, in tangent-plane nm. Mirrors airport-data. */
+export interface GroundLayoutDTO {
+  runways: { ends: [string, string]; centerline: [Vec2, Vec2]; widthFt: number }[];
+  taxiways: { id: string; path: Vec2[] }[];
+  holdShort: { runway: string; pos: Vec2; heading: number }[];
+  ramps: { id: string; label?: string; polygon: Vec2[] }[];
 }
 
 export interface AirportInfoDTO {
@@ -64,6 +86,7 @@ export interface AirportInfoDTO {
   runways: RunwayDTO[];
   navaids: NavaidDTO[];
   positions: PositionDTO[];
+  ground: GroundLayoutDTO | null;
   /** Scope range in nautical miles from the reference point. */
   rangeNm: number;
 }
@@ -85,7 +108,9 @@ export interface NavaidDTO {
 /** Server → client messages. */
 export type ServerMessage =
   | { type: "welcome"; airport: AirportInfoDTO; tickRate: number; serverStt: boolean; serverTts: boolean }
-  | { type: "state"; time: number; aircraft: AircraftSnapshot[] }
+  | { type: "state"; time: number; aircraft: AircraftSnapshot[]; stats: SessionStats }
+  /** New separation conflict — a "traffic alert" the controller must resolve. */
+  | { type: "conflict_alert"; a: string; b: string; text: string; severity: "warning" | "violation" }
   | { type: "readback"; callsign: string; text: string; position: string; ok: true }
   | { type: "command_error"; input: string; error: string; ok: false }
   /** Pilot-initiated transmission (check-in, request, etc.). */
@@ -98,7 +123,34 @@ export type ServerMessage =
       outcome: "landed" | "departed" | "exited";
       runway: string | null;
       position: string;
-    };
+    }
+  /** Session roster + admin state; broadcast on any change. */
+  | { type: "session"; session: SessionInfo };
+
+/** A connected controller and the position they are working. */
+export interface ControllerInfo {
+  id: string;
+  position: string | null;
+}
+
+/** Live session/admin state, broadcast to everyone. */
+export interface SessionInfo {
+  controllers: ControllerInfo[];
+  paused: boolean;
+  trafficCount: number;
+}
+
+/** Administrative actions available from the admin console. */
+export type AdminAction =
+  | { kind: "reset" }
+  | { kind: "pause" }
+  | { kind: "resume" }
+  | { kind: "set_traffic"; count: number }
+  | { kind: "reset_stats" };
 
 /** Client → server messages. */
-export type ClientMessage = { type: "command"; text: string };
+export type ClientMessage =
+  | { type: "command"; text: string }
+  /** Claim/announce the position this client is working. */
+  | { type: "set_position"; position: string }
+  | { type: "admin"; action: AdminAction };

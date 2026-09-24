@@ -33,21 +33,21 @@ describe("SimEngine", () => {
 
   it("transfers ownership on a handoff", () => {
     const eng = new SimEngine(KHOU);
-    const [ac] = generateTraffic(KHOU, 1, 1);
-    eng.add(ac!);
-    expect(ac!.controller).toBe("APP");
-    const res = eng.applyCommandToCallsign(ac!.callsign, { kind: "contact", position: "TWR", frequency: "118.7" });
+    const ac = generateAircraft(KHOU, mulberry32(1), "overflight", new Set());
+    eng.add(ac);
+    expect(ac.controller).toBe("APP");
+    const res = eng.applyCommandToCallsign(ac.callsign, { kind: "contact", position: "TWR", frequency: "118.7" });
     expect(res.ok).toBe(true);
-    expect(ac!.controller).toBe("TWR");
+    expect(ac.controller).toBe("TWR");
   });
 
   it("rejects a handoff to an unknown position", () => {
     const eng = new SimEngine(KHOU);
-    const [ac] = generateTraffic(KHOU, 1, 1);
-    eng.add(ac!);
-    const res = eng.applyCommandToCallsign(ac!.callsign, { kind: "contact", position: "XYZ", frequency: null });
+    const ac = generateAircraft(KHOU, mulberry32(1), "overflight", new Set());
+    eng.add(ac);
+    const res = eng.applyCommandToCallsign(ac.callsign, { kind: "contact", position: "XYZ", frequency: null });
     expect(res.ok).toBe(false);
-    expect(ac!.controller).toBe("APP");
+    expect(ac.controller).toBe("APP");
   });
 
   it("reaps an arrival established on its runway as landed", () => {
@@ -102,13 +102,25 @@ describe("SimEngine", () => {
     expect(a.callsign).not.toBe(b.callsign);
   });
 
-  it("rejects an approach clearance for a runway with no published approach", () => {
+  it("rejects an approach clearance for a runway that does not exist", () => {
     const eng = new SimEngine(KHOU);
     const [ac] = generateTraffic(KHOU, 1, 1);
     eng.add(ac!);
-    const res = eng.applyCommandToCallsign(ac!.callsign, { kind: "approach", runway: "17" });
+    const res = eng.applyCommandToCallsign(ac!.callsign, { kind: "approach", runway: "17", visual: false });
     expect(res.ok).toBe(false);
     expect(ac!.clearedApproach).toBeNull();
+  });
+
+  it("clears a visual approach to a runway with no published ILS (e.g. 22)", () => {
+    const eng = new SimEngine(KHOU);
+    const [ac] = generateTraffic(KHOU, 1, 1);
+    eng.add(ac!);
+    const rwy22 = KHOU.runways.find((r) => r.id === "22")!;
+    const res = eng.applyCommandToCallsign(ac!.callsign, { kind: "approach", runway: "22", visual: false });
+    expect(res.ok).toBe(true);
+    expect(ac!.clearedApproach?.runwayId).toBe("22");
+    // Final course synthesized from the runway heading.
+    expect(ac!.clearedApproach?.finalCourse).toBe(rwy22.heading);
   });
 
   it("captures the localizer and flies the ILS down to a landing", () => {
@@ -133,10 +145,12 @@ describe("SimEngine", () => {
       intent: { ...seed!.intent, kind: "arrival", destination: "KHOU", runway: "13R", navTarget: { x: 0, y: 0 } },
       status: "active",
       clearedApproach: null,
+      phase: "airborne",
+      taxiRoute: [],
     };
     eng.add(arrival);
 
-    const cleared = eng.applyCommandToCallsign(arrival.callsign, { kind: "approach", runway: "13R" });
+    const cleared = eng.applyCommandToCallsign(arrival.callsign, { kind: "approach", runway: "13R", visual: false });
     expect(cleared.ok).toBe(true);
 
     let landed = false;

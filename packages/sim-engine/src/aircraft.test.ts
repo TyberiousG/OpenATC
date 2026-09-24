@@ -28,6 +28,8 @@ function makeAircraft(overrides: Partial<Aircraft> = {}): Aircraft {
     },
     status: "active",
     clearedApproach: null,
+    phase: "airborne",
+    taxiRoute: [],
     ...overrides,
   };
 }

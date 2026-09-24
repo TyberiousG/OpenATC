@@ -1,6 +1,6 @@
 import type { AirportPackage } from "@openatc/airport-data";
 import type { Aircraft, FlightKind } from "./aircraft.js";
-import { normalizeHeading, type Vec2 } from "./geo.js";
+import { normalizeHeading, distanceNm, type Vec2 } from "./geo.js";
 import { mulberry32, randRange, pick } from "./rng.js";
 
 interface Airline {
@@ -75,6 +75,20 @@ function base(rng: () => number, cs: { callsign: string; spoken: string }, pos: 
     squawk: makeSquawk(rng),
     status: "active",
     clearedApproach: null,
+    phase: "airborne",
+    taxiRoute: [],
+  };
+}
+
+/** Centroid of the terminal ramp (or first ramp) for parking departures. */
+function rampCenter(airport: AirportPackage): Vec2 {
+  const ramps = airport.ground?.ramps ?? [];
+  const ramp = ramps.find((r) => r.label === "TERMINAL") ?? ramps[0];
+  if (!ramp) return { x: 0, y: 0 };
+  const n = ramp.polygon.length;
+  return {
+    x: ramp.polygon.reduce((a, p) => a + p.x, 0) / n,
+    y: ramp.polygon.reduce((a, p) => a + p.y, 0) / n,
   };
 }
 
@@ -88,23 +102,24 @@ export function generateAircraft(
   const cs = newCallsign(rng, used);
 
   if (kind === "departure") {
+    // Departures start parked at the ramp, on the ground, worked by Ground.
     const rwy = pick(rng, landingRunways(airport));
-    const hdg = runwayHeading(airport, rwy);
-    const dist = randRange(rng, 1.5, 6);
-    const rad = (hdg * Math.PI) / 180;
-    const pos = { x: Math.sin(rad) * dist, y: Math.cos(rad) * dist };
+    const center = rampCenter(airport);
+    const pos = { x: center.x + randRange(rng, -0.04, 0.04), y: center.y + randRange(rng, -0.04, 0.04) };
     const cruise = Math.round(randRange(rng, 16000, 24000) / 1000) * 1000;
     const ac = base(rng, cs, pos) as Aircraft;
-    ac.altitude = Math.round(randRange(rng, airport.elevation + 1500, 5000) / 100) * 100;
-    ac.heading = hdg;
-    ac.speed = Math.round(randRange(rng, 180, 250) / 10) * 10;
+    ac.altitude = airport.elevation;
+    ac.heading = Math.round(randRange(rng, 0, 360));
+    ac.speed = 0;
+    ac.controller = "GND";
+    ac.phase = "ramp";
     ac.intent = {
       kind: "departure",
       origin: airport.icao,
       destination: pick(rng, CITIES),
       runway: rwy,
       cruiseAltitude: cruise,
-      navTarget: null, // fly runway heading until vectored
+      navTarget: null, // fly runway heading once airborne, until vectored
     };
     return ac;
   }
@@ -148,6 +163,36 @@ export function generateAircraft(
   return ac;
 }
 
+/** True if a candidate would spawn inside comfortable separation of existing traffic. */
+function tooClose(candidate: Aircraft, existing: Aircraft[]): boolean {
+  if (candidate.phase !== "airborne") return false; // ground traffic parks together
+  return existing.some(
+    (o) =>
+      o.phase === "airborne" &&
+      distanceNm(candidate.position, o.position) < 5 &&
+      Math.abs(candidate.altitude - o.altitude) < 1000,
+  );
+}
+
+/**
+ * Generate an aircraft that is clear of existing traffic, so nothing spawns
+ * already in conflict. Deterministic given `rng` (retries consume the stream).
+ */
+export function generateSpacedAircraft(
+  airport: AirportPackage,
+  rng: () => number,
+  kind: FlightKind,
+  used: Set<string>,
+  existing: Aircraft[],
+): Aircraft {
+  let ac = generateAircraft(airport, rng, kind, used);
+  for (let tries = 0; tries < 20 && tooClose(ac, existing); tries++) {
+    used.delete(ac.callsign);
+    ac = generateAircraft(airport, rng, kind, used);
+  }
+  return ac;
+}
+
 /** Pick a flight kind with a realistic-ish mix. */
 export function pickFlightKind(rng: () => number): FlightKind {
   const r = rng();
@@ -165,7 +210,7 @@ export function generateTraffic(airport: AirportPackage, seed: number, count: nu
   const used = new Set<string>();
   const out: Aircraft[] = [];
   for (let i = 0; i < count; i++) {
-    out.push(generateAircraft(airport, rng, pickFlightKind(rng), used));
+    out.push(generateSpacedAircraft(airport, rng, pickFlightKind(rng), used, out));
   }
   return out;
 }

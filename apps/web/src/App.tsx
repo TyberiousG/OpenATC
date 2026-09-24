@@ -10,16 +10,24 @@ import { GroundMap } from "./GroundMap.js";
 import { CommandInput } from "./CommandInput.js";
 import { PttControl } from "./PttControl.js";
 import { FrequencySelector } from "./FrequencySelector.js";
+import { AdminPanel } from "./AdminPanel.js";
 
 export function App() {
   // Speaking is routed through a ref so the socket's onVoice can reach whichever
   // TTS backend we settle on below (server-side Deepgram or the browser).
   const speakRef = useRef<(text: string, voiceKey: string, opts?: { skipIfBusy?: boolean }) => void>(() => {});
   const [position, setPosition] = useState("APP");
-  const { connected, airport, aircraft, simTime, log, serverStt, serverTts, sendCommand, pushSystem } = useSimSocket({
-    onVoice: (voiceKey, text, kind) => speakRef.current(text, voiceKey, { skipIfBusy: kind === "pilot" }),
-    activePosition: position,
-  });
+  const { connected, airport, aircraft, simTime, log, serverStt, serverTts, stats, session, sendCommand, sendMessage, clearLog, pushSystem } =
+    useSimSocket({
+      onVoice: (voiceKey, text, kind) => speakRef.current(text, voiceKey, { skipIfBusy: kind === "pilot" }),
+      activePosition: position,
+    });
+  const [adminOpen, setAdminOpen] = useState(false);
+
+  // Announce the position we're working to the shared session.
+  useEffect(() => {
+    if (connected) sendMessage({ type: "set_position", position });
+  }, [connected, position, sendMessage]);
   const browserTts = useTts();
   const serverTtsHandle = useServerTts(serverTts);
   const tts = serverTtsHandle.supported ? serverTtsHandle : browserTts;
@@ -94,13 +102,22 @@ export function App() {
         )}
         <span className="clock">T+{simTime.toFixed(0)}s</span>
         <span>{aircraft.length} tracks</span>
+        <span className="stat ok" title="Landings">✓ {stats.landings}</span>
+        <span className="stat ok" title="Departures">↑ {stats.departures}</span>
+        <span className={stats.violations > 0 ? "stat bad" : "stat"} title="Separation violations">
+          ⚠ {stats.violations}
+        </span>
+        {session.paused && <span className="stat bad">⏸ PAUSED</span>}
+        <button type="button" className="admin-btn" onClick={() => setAdminOpen(true)} title="Admin console">
+          ⚙
+        </button>
       </header>
 
       <main className="main">
         <section className="scope-wrap">
           {airport &&
             (position === "GND" ? (
-              <GroundMap airport={airport} />
+              <GroundMap airport={airport} aircraft={aircraft} />
             ) : (
               <RadarScope
                 airport={airport}
@@ -165,6 +182,16 @@ export function App() {
           />
         </CommandInput>
       </footer>
+
+      {adminOpen && (
+        <AdminPanel
+          session={session}
+          stats={stats}
+          onAdmin={(action) => sendMessage({ type: "admin", action })}
+          onClearLog={clearLog}
+          onClose={() => setAdminOpen(false)}
+        />
+      )}
     </div>
   );
 }

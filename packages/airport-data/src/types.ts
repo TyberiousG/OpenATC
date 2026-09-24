@@ -51,6 +51,53 @@ export interface PositionDef {
   frequency: string;
 }
 
+/**
+ * Airport surface geometry for the ground/taxi diagram, in local tangent-plane
+ * nautical miles (x = east, y = north, origin = airport reference). Kept as
+ * declarative data so the taxi logic (routing, hold-short, incursions) can be
+ * built on the same graph the diagram is drawn from.
+ */
+export interface GroundPoint {
+  x: number;
+  y: number;
+}
+
+export interface RunwaySurface {
+  /** Physical runway, both ends, e.g. ["04", "22"]. */
+  ends: [string, string];
+  centerline: [GroundPoint, GroundPoint];
+  widthFt: number;
+}
+
+export interface Taxiway {
+  /** Identifier, e.g. "A", "B", "K2". */
+  id: string;
+  /** Ordered polyline of the taxiway centerline. */
+  path: GroundPoint[];
+}
+
+export interface HoldShort {
+  /** Runway this hold-short line protects, e.g. "13R". */
+  runway: string;
+  pos: GroundPoint;
+  /** Orientation of the hold bar (the runway heading it faces). */
+  heading: number;
+}
+
+export interface RampArea {
+  id: string;
+  label?: string;
+  /** Closed polygon of the apron/ramp/terminal area. */
+  polygon: GroundPoint[];
+}
+
+export interface GroundLayout {
+  runways: RunwaySurface[];
+  taxiways: Taxiway[];
+  holdShort: HoldShort[];
+  ramps: RampArea[];
+}
+
 export interface AirportPackage {
   icao: string;
   name: string;
@@ -65,6 +112,8 @@ export interface AirportPackage {
   approaches: ApproachDef[];
   /** Controller positions / frequencies that can be worked at this airport. */
   positions: PositionDef[];
+  /** Surface diagram geometry (runways, taxiways, ramps). Optional. */
+  ground?: GroundLayout;
   /** Default radar scope range in nautical miles. */
   rangeNm: number;
 }

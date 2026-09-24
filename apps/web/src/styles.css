@@ -108,6 +108,138 @@ body {
   color: var(--green);
 }
 
+.admin-btn {
+  background: #01100a;
+  border: 1px solid var(--dim);
+  color: var(--green);
+  font-size: 15px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.admin-btn:hover {
+  border-color: var(--green);
+}
+
+.admin-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.admin-panel {
+  width: 420px;
+  max-width: 92vw;
+  background: var(--panel);
+  border: 1px solid var(--green);
+  border-radius: 5px;
+  padding: 14px 18px 18px;
+  box-shadow: 0 0 30px rgba(0, 0, 0, 0.6);
+}
+
+.admin-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  letter-spacing: 2px;
+  font-weight: bold;
+  border-bottom: 1px solid var(--dim);
+  padding-bottom: 8px;
+}
+
+.admin-close {
+  background: transparent;
+  border: none;
+  color: var(--dim);
+  cursor: pointer;
+  font-size: 15px;
+}
+.admin-close:hover {
+  color: var(--amber);
+}
+
+.admin-panel h3 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--dim);
+  margin: 16px 0 6px;
+}
+
+.admin-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 6px 0;
+}
+
+.admin-paused {
+  color: #ff4d4d;
+  font-weight: bold;
+}
+
+.admin-positions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.admin-positions li {
+  display: grid;
+  grid-template-columns: 40px 1fr auto;
+  gap: 8px;
+  padding: 3px 0;
+}
+.admin-positions .pos-id {
+  font-weight: bold;
+  color: var(--green);
+}
+.pos-on {
+  color: var(--green);
+}
+.pos-off {
+  color: var(--dim);
+}
+
+.admin-buttons {
+  display: flex;
+  gap: 8px;
+  margin: 6px 0;
+}
+.admin-buttons button,
+.admin-stepper button {
+  background: #01100a;
+  border: 1px solid var(--dim);
+  color: var(--green);
+  font-family: inherit;
+  font-size: 13px;
+  padding: 6px 12px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.admin-buttons button:hover,
+.admin-stepper button:hover {
+  border-color: var(--green);
+}
+.admin-buttons button.danger {
+  border-color: #a33;
+  color: #ff8888;
+}
+.admin-buttons button.danger:hover {
+  border-color: #ff4d4d;
+}
+.admin-stepper {
+  display: flex;
+  gap: 4px;
+}
+.admin-stepper button {
+  width: 30px;
+  padding: 4px 0;
+}
+
 .main {
   flex: 1;
   display: flex;
@@ -249,6 +381,21 @@ body {
 }
 .log-pilot {
   color: #66d9ff;
+}
+.log-alert {
+  color: #ff4d4d;
+  font-weight: bold;
+}
+
+.stat {
+  color: var(--dim);
+}
+.stat.ok {
+  color: var(--green);
+}
+.stat.bad {
+  color: #ff4d4d;
+  font-weight: bold;
 }
 
 .bottom {

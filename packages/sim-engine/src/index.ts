@@ -4,3 +4,4 @@ export * from "./commands.js";
 export * from "./aircraft.js";
 export * from "./engine.js";
 export * from "./scenario.js";
+export * from "./separation.js";

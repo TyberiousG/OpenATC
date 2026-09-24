@@ -13,6 +13,7 @@ interface Props {
 const GREEN = "#39ff88";
 const DIM = "#1f6b47";
 const AMBER = "#ffcc44";
+const RED = "#ff4d4d";
 
 /** Amount of look-ahead the velocity leader line represents, in seconds. */
 const LEADER_SECONDS = 60;
@@ -163,6 +164,16 @@ export function RadarScope({ airport, aircraft, selectedId, activePosition, onSe
       ctx.fillStyle = color;
 
       ctx.fillRect(px - 3, py - 3, 6, 6);
+
+      // Separation alert halo: red = loss of separation, amber = predicted.
+      if (ac.alert !== "none") {
+        ctx.strokeStyle = ac.alert === "violation" ? RED : AMBER;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(px, py, 11, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.lineWidth = 1;
+      }
 
       const rad = (ac.heading * Math.PI) / 180;
       const leadNm = (ac.speed * LEADER_SECONDS) / 3600;

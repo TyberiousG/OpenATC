@@ -2,7 +2,9 @@ import type { AirportPackage } from "@openatc/airport-data";
 import type { Command } from "./commands.js";
 import { validateCommand } from "./commands.js";
 import { applyCommand, stepAircraft, type Aircraft } from "./aircraft.js";
-import { planeToLatLon, projectToPlane, distanceNm, headingDifference } from "./geo.js";
+import { planeToLatLon, projectToPlane, distanceNm, headingDifference, bearingTo, type Vec2 } from "./geo.js";
+import { detectConflicts, type Conflict } from "./separation.js";
+import { buildTaxiNetwork, planTaxiRoute, type TaxiNetwork } from "./taxiNetwork.js";
 
 export type FlightOutcome = "landed" | "departed" | "exited";
 
@@ -39,10 +41,20 @@ export class SimEngine {
   time = 0;
   private readonly byId = new Map<string, Aircraft>();
 
-  constructor(public readonly airport: AirportPackage) {}
+  private readonly taxiNet: TaxiNetwork | null;
+
+  constructor(public readonly airport: AirportPackage) {
+    this.taxiNet = airport.ground ? buildTaxiNetwork(airport.ground) : null;
+  }
 
   add(ac: Aircraft): void {
     this.byId.set(ac.id, ac);
+  }
+
+  /** Remove all aircraft and reset the clock (used by an admin reset). */
+  clear(): void {
+    this.byId.clear();
+    this.time = 0;
   }
 
   list(): Aircraft[] {
@@ -79,31 +91,91 @@ export class SimEngine {
     if (!ac) return { ok: false, error: `no aircraft with callsign ${callsign}` };
     const invalid = validateCommand(cmd);
     if (invalid) return { ok: false, error: invalid.message, aircraft: ac };
-    if (cmd.kind === "approach") return this.clearForApproach(ac, cmd.runway);
+    if (cmd.kind === "approach") return this.clearForApproach(ac, cmd.runway, cmd.visual);
+    if (cmd.kind === "taxi") return this.taxiToRunway(ac, cmd.runway, cmd.via);
+    if (cmd.kind === "takeoff") return this.clearForTakeoff(ac, cmd.runway);
     applyCommand(ac, cmd);
     return { ok: true, aircraft: ac };
   }
 
-  /** Resolve and attach an ILS approach clearance for a runway. */
-  private clearForApproach(ac: Aircraft, runway: string | null): CommandResult {
+  /**
+   * The departure end of a runway, in tangent-plane nm. Prefers the accurate
+   * ground-diagram geometry (what the surface map draws) so aircraft taxi to
+   * the point they visibly should; falls back to the approximate runway list.
+   * The heading is the takeoff-roll direction from that end.
+   */
+  private departureEnd(rwyId: string): { pos: Vec2; heading: number } | null {
+    const g = this.airport.ground;
+    if (g) {
+      for (const r of g.runways) {
+        const idx = r.ends.indexOf(rwyId);
+        if (idx >= 0) {
+          const pos = r.centerline[idx]!;
+          const other = r.centerline[1 - idx]!;
+          return { pos: { x: pos.x, y: pos.y }, heading: bearingTo(pos, other) };
+        }
+      }
+    }
+    const rwy = this.airport.runways.find((r) => r.id === rwyId);
+    if (rwy) return { pos: projectToPlane(this.airport.reference, rwy.threshold), heading: rwy.heading };
+    return null;
+  }
+
+  /** Route a ground aircraft to the departure end of a runway, via any taxiways given. */
+  private taxiToRunway(ac: Aircraft, runway: string | null, via: string[]): CommandResult {
+    if (ac.phase === "airborne") return { ok: false, error: "aircraft is airborne", aircraft: ac };
+    const rwyId = (runway ?? ac.intent.runway)?.toUpperCase() ?? null;
+    const end = rwyId ? this.departureEnd(rwyId) : null;
+    if (!rwyId || !end) return { ok: false, error: `unknown runway ${rwyId ?? "(none)"}`, aircraft: ac };
+    ac.intent.runway = rwyId;
+    ac.taxiRoute = this.taxiNet ? planTaxiRoute(this.taxiNet, ac.position, end.pos, via) : [end.pos];
+    ac.phase = "taxi";
+    return { ok: true, aircraft: ac };
+  }
+
+  /** Clear a ground aircraft for takeoff: it lines up and rolls down the runway. */
+  private clearForTakeoff(ac: Aircraft, runway: string | null): CommandResult {
+    if (ac.phase === "airborne") return { ok: false, error: "aircraft is airborne", aircraft: ac };
+    const rwyId = (runway ?? ac.intent.runway)?.toUpperCase() ?? null;
+    const end = rwyId ? this.departureEnd(rwyId) : null;
+    if (!rwyId || !end) return { ok: false, error: `unknown runway ${rwyId ?? "(none)"}`, aircraft: ac };
+    ac.phase = "takeoff";
+    ac.taxiRoute = [];
+    ac.position = { x: end.pos.x, y: end.pos.y };
+    ac.heading = end.heading;
+    ac.altitude = this.airport.elevation;
+    ac.intent.runway = rwyId;
+    return { ok: true, aircraft: ac };
+  }
+
+  /**
+   * Attach an approach clearance for a runway. Uses the published ILS when one
+   * exists (and a visual wasn't requested); otherwise clears a *visual*
+   * approach synthesized from the runway geometry (final course = runway
+   * heading, 3° path), so any runway that exists can be cleared.
+   */
+  private clearForApproach(ac: Aircraft, runway: string | null, visual: boolean): CommandResult {
     const rwyId = (runway ?? ac.intent.runway)?.toUpperCase() ?? null;
     if (!rwyId) return { ok: false, error: "no runway specified or assigned", aircraft: ac };
-    const appr = this.airport.approaches.find((a) => a.runwayId === rwyId);
-    if (!appr) return { ok: false, error: `no published approach for runway ${rwyId}`, aircraft: ac };
-    const rwy = this.airport.runways.find((r) => r.id === appr.runwayId);
-    if (!rwy) return { ok: false, error: `unknown runway ${appr.runwayId}`, aircraft: ac };
+    const rwy = this.airport.runways.find((r) => r.id === rwyId);
+    if (!rwy) return { ok: false, error: `unknown runway ${rwyId}`, aircraft: ac };
 
+    const published = visual ? undefined : this.airport.approaches.find((a) => a.runwayId === rwyId);
     ac.clearedApproach = {
       runwayId: rwy.id,
-      finalCourse: appr.finalCourse,
-      glideslopeAngle: appr.glideslopeAngle,
+      finalCourse: published?.finalCourse ?? rwy.heading,
+      glideslopeAngle: published?.glideslopeAngle ?? 3.0,
       thresholdPos: projectToPlane(this.airport.reference, rwy.threshold),
       thresholdElevation: this.airport.elevation,
       localizerCaptured: false,
     };
-    // Land on the cleared runway.
     ac.intent.runway = rwy.id;
     return { ok: true, aircraft: ac };
+  }
+
+  /** Current separation conflicts among active aircraft. */
+  conflicts(): Conflict[] {
+    return detectConflicts(this.list());
   }
 
   /** Geographic position of an aircraft, derived from its plane position. */

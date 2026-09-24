@@ -35,7 +35,13 @@ const SPEED_KNOTS_RE = /(\d{2,3})\s*(?:knots|kts|kt)\b/;
 const SQUAWK_RE = /(?:squawk|transponder|beacon)\s+(?:code\s+)?(\d{4})/;
 /** "cleared ILS 13R approach" / "cleared approach" / "cleared for the ILS runway 04 approach". */
 const APPROACH_RE =
-  /clear(?:ed)?\s+(?:for\s+)?(?:the\s+)?(?:ils\s+)?(?:runway\s+)?(?:(\d{1,2})\s*(left|right|center|centre|l|r|c)?\s+)?approach/;
+  /clear(?:ed)?\s+(?:for\s+)?(?:the\s+)?(ils|visual|rnav)?\s*(?:runway\s+)?(?:(\d{1,2})\s*(left|right|center|centre|l|r|c)?\s+)?approach(?:\s+(?:to\s+)?(?:runway\s+)?(\d{1,2})\s*(left|right|center|centre|l|r|c)?)?/;
+/** "taxi to runway 13R" / "taxi to 04" / "taxi runway one three right". */
+const TAXI_RE =
+  /taxi\s+(?:to\s+)?(?:runway\s+)?(?:(\d{1,2})\s*(left|right|center|centre|l|r|c)?)?/;
+/** "cleared for takeoff", "runway 13R cleared for takeoff", "cleared for takeoff runway 04". */
+const TAKEOFF_RE =
+  /(?:runway\s+(\d{1,2})\s*(left|right|center|centre|l|r|c)?\s+)?clear(?:ed)?\s+for\s+takeoff(?:\s+runway\s+(\d{1,2})\s*(left|right|center|centre|l|r|c)?)?/;
 
 const RUNWAY_SIDE: Record<string, string> = {
   left: "L", right: "R", center: "C", centre: "C", l: "L", r: "R", c: "C",
@@ -44,6 +50,34 @@ const RUNWAY_SIDE: Record<string, string> = {
 function runwayId(digits: string | undefined, side: string | undefined): string | null {
   if (!digits) return null;
   return digits.padStart(2, "0") + (side ? (RUNWAY_SIDE[side] ?? "") : "");
+}
+
+const PHONETIC: Record<string, string> = {
+  alpha: "A", bravo: "B", charlie: "C", delta: "D", echo: "E", foxtrot: "F",
+  golf: "G", hotel: "H", india: "I", juliet: "J", juliett: "J", kilo: "K",
+  lima: "L", mike: "M", november: "N", oscar: "O", papa: "P", quebec: "Q",
+  romeo: "R", sierra: "S", tango: "T", uniform: "U", victor: "V", whiskey: "W",
+  xray: "X", yankee: "Y", zulu: "Z",
+};
+
+/** Parse a "via A B K2" taxiway list (phonetic or letter/alphanumeric ids). */
+function parseVia(rest: string): string[] {
+  const m = rest.match(/\bvia\s+(.+)$/);
+  if (!m) return [];
+  const tail = m[1]!.split(/\b(?:hold|contact|then|and hold)\b/)[0]!;
+  const tokens = tail.split(/[\s,]+/).filter((t) => t && t !== "and" && t !== "taxiway" && t !== "on");
+  const out: string[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i]!;
+    if (t in PHONETIC) {
+      let id = PHONETIC[t]!;
+      if (i + 1 < tokens.length && /^\d$/.test(tokens[i + 1]!)) id += tokens[++i]!;
+      out.push(id);
+    } else if (/^[a-z]{1,2}\d?$/.test(t)) {
+      out.push(t.toUpperCase());
+    }
+  }
+  return out;
 }
 
 /** Handoff: "contact [facility] <tower|ground|approach|departure|center>". */
@@ -156,14 +190,39 @@ export function parseCommand(rawInput: string): ParseResult {
     });
   }
 
-  // Approach clearance
+  // Approach clearance (ILS when published, else visual)
   const ap = rest.match(APPROACH_RE);
   if (ap) {
-    const runway = runwayId(ap[1], ap[2]);
+    const type = ap[1] as "ils" | "visual" | "rnav" | undefined;
+    const runway = runwayId(ap[2] ?? ap[4], ap[3] ?? ap[5]);
+    const visual = type === "visual";
     clauses.push({
-      command: { kind: "approach", runway },
-      readback: { kind: "approach", runway },
+      command: { kind: "approach", runway, visual },
+      readback: { kind: "approach", runway, type: type ?? null },
       index: ap.index ?? 0,
+    });
+  }
+
+  // Taxi
+  const tx = rest.match(TAXI_RE);
+  if (tx) {
+    const runway = runwayId(tx[1], tx[2]);
+    const via = parseVia(rest);
+    clauses.push({
+      command: { kind: "taxi", runway, via },
+      readback: { kind: "taxi", runway, via },
+      index: tx.index ?? 0,
+    });
+  }
+
+  // Takeoff clearance
+  const to = rest.match(TAKEOFF_RE);
+  if (to) {
+    const runway = runwayId(to[1] ?? to[3], to[2] ?? to[4]);
+    clauses.push({
+      command: { kind: "takeoff", runway },
+      readback: { kind: "takeoff", runway },
+      index: to.index ?? 0,
     });
   }
 

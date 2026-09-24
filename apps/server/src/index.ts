@@ -1,10 +1,19 @@
 import { createServer } from "node:http";
+import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import { getAirport } from "@openatc/airport-data";
-import { SimEngine, generateTraffic, generateAircraft, pickFlightKind, mulberry32 } from "@openatc/sim-engine";
-import { parseCommand, AIRLINES } from "@openatc/phraseology";
+import {
+  SimEngine,
+  generateTraffic,
+  generateSpacedAircraft,
+  pickFlightKind,
+  mulberry32,
+  alertLevels,
+  conflictKey,
+} from "@openatc/sim-engine";
+import { parseCommand, AIRLINES, spokenCallsign } from "@openatc/phraseology";
 import { createDeepgramStt, createDeepgramTts, isAuraVoice } from "@openatc/voice";
-import type { ClientMessage, ServerMessage } from "@openatc/shared";
+import type { ClientMessage, ServerMessage, AdminAction } from "@openatc/shared";
 import { config } from "./config.js";
 import { createPersistence } from "./db.js";
 import { toAirportInfo, toSnapshot } from "./mapping.js";
@@ -115,9 +124,34 @@ async function main(): Promise<void> {
     }
   }
 
+  // Session scoring / operational counters.
+  const stats = { landings: 0, departures: 0, violations: 0, activeAlerts: 0 };
+
+  // Multiplayer session: who is connected and which position they work.
+  const sessions = new Map<WebSocket, { id: string; position: string | null }>();
+  let paused = false;
+
+  function broadcastSession(): void {
+    broadcast({
+      type: "session",
+      session: {
+        controllers: [...sessions.values()].map((s) => ({ id: s.id, position: s.position })),
+        paused,
+        trafficCount: config.trafficCount,
+      },
+    });
+  }
+
   wss.on("connection", (ws) => {
+    sessions.set(ws, { id: randomUUID().slice(0, 8), position: null });
     send(ws, { type: "welcome", airport: airportInfo, tickRate: 1 / config.tickDt, serverStt: !!stt, serverTts: !!tts });
-    send(ws, { type: "state", time: engine.time, aircraft: engine.list().map((ac) => toSnapshot(engine, ac)) });
+    send(ws, { type: "state", time: engine.time, aircraft: engine.list().map((ac) => toSnapshot(engine, ac)), stats });
+    broadcastSession();
+
+    ws.on("close", () => {
+      sessions.delete(ws);
+      broadcastSession();
+    });
 
     ws.on("message", (raw) => {
       let msg: ClientMessage;
@@ -126,10 +160,52 @@ async function main(): Promise<void> {
       } catch {
         return;
       }
-      if (msg.type !== "command") return;
-      handleCommand(ws, msg.text);
+      if (msg.type === "command") handleCommand(ws, msg.text);
+      else if (msg.type === "set_position") {
+        const s = sessions.get(ws);
+        if (s) {
+          s.position = msg.position;
+          broadcastSession();
+        }
+      } else if (msg.type === "admin") {
+        handleAdmin(msg.action);
+      }
     });
   });
+
+  function handleAdmin(action: AdminAction): void {
+    switch (action.kind) {
+      case "reset":
+        resetSim();
+        broadcast({ type: "state", time: engine.time, aircraft: engine.list().map((ac) => toSnapshot(engine, ac)), stats });
+        break;
+      case "pause":
+        paused = true;
+        break;
+      case "resume":
+        paused = false;
+        break;
+      case "set_traffic":
+        config.trafficCount = Math.max(0, Math.min(30, Math.round(action.count)));
+        break;
+      case "reset_stats":
+        Object.assign(stats, { landings: 0, departures: 0, violations: 0, activeAlerts: 0 });
+        break;
+    }
+    broadcastSession();
+  }
+
+  function resetSim(): void {
+    engine.clear();
+    usedCallsigns.clear();
+    knownConflicts.clear();
+    lastCall.clear();
+    Object.assign(stats, { landings: 0, departures: 0, violations: 0, activeAlerts: 0 });
+    for (const ac of generateTraffic(engine.airport, (Date.now() & 0xffff) + 1, config.trafficCount)) {
+      engine.add(ac);
+      usedCallsigns.add(ac.callsign);
+    }
+  }
 
   function handleCommand(ws: WebSocket, text: string): void {
     const parsed = parseCommand(text);
@@ -179,9 +255,14 @@ async function main(): Promise<void> {
   const spawnRng = mulberry32(config.trafficSeed + 7919);
   const usedCallsigns = new Set(engine.list().map((ac) => ac.callsign));
 
+  // Conflict pairs already announced, so we alert once per new conflict.
+  const knownConflicts = new Set<string>();
+
   const reapAndSpawn = () => {
     for (const done of engine.reap()) {
       usedCallsigns.delete(done.aircraft.callsign);
+      if (done.outcome === "landed") stats.landings++;
+      else if (done.outcome === "departed") stats.departures++;
       broadcast({
         type: "flight_complete",
         callsign: done.aircraft.callsign,
@@ -192,15 +273,47 @@ async function main(): Promise<void> {
       });
     }
     while (engine.list().length < config.trafficCount) {
-      engine.add(generateAircraft(airport, spawnRng, pickFlightKind(spawnRng), usedCallsigns));
+      engine.add(generateSpacedAircraft(airport, spawnRng, pickFlightKind(spawnRng), usedCallsigns, engine.list()));
     }
   };
 
   const tickMs = config.tickDt * 1000;
-  const simTimer = setInterval(() => engine.tick(config.tickDt), tickMs);
+  const simTimer = setInterval(() => {
+    if (!paused) engine.tick(config.tickDt);
+  }, tickMs);
   const broadcastTimer = setInterval(() => {
-    reapAndSpawn();
-    broadcast({ type: "state", time: engine.time, aircraft: engine.list().map((ac) => toSnapshot(engine, ac)) });
+    if (!paused) reapAndSpawn();
+
+    const conflicts = engine.conflicts();
+    const alerts = alertLevels(conflicts);
+    stats.activeAlerts = alerts.size;
+
+    // Announce each newly-formed conflict once; count new violations.
+    const live = new Set<string>();
+    for (const c of conflicts) {
+      const key = conflictKey(c);
+      live.add(key);
+      if (!knownConflicts.has(key)) {
+        knownConflicts.add(key);
+        if (c.severity === "violation") stats.violations++;
+        const verb = c.severity === "violation" ? "LOSS OF SEPARATION" : "conflict alert";
+        broadcast({
+          type: "conflict_alert",
+          a: c.a,
+          b: c.b,
+          severity: c.severity,
+          text: `${verb}: ${spokenCallsign(c.a)} and ${spokenCallsign(c.b)}`,
+        });
+      }
+    }
+    for (const key of knownConflicts) if (!live.has(key)) knownConflicts.delete(key);
+
+    broadcast({
+      type: "state",
+      time: engine.time,
+      aircraft: engine.list().map((ac) => toSnapshot(engine, ac, alerts.get(ac.id) ?? "none")),
+      stats,
+    });
   }, config.broadcastMs);
 
   // Occasional pilot-initiated radio calls. Self-scheduling with a random gap

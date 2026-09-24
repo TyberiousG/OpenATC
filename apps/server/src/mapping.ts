@@ -1,5 +1,5 @@
 import type { AirportPackage } from "@openatc/airport-data";
-import { projectToPlane, type SimEngine, type Aircraft } from "@openatc/sim-engine";
+import { projectToPlane, type SimEngine, type Aircraft, type AlertLevel } from "@openatc/sim-engine";
 import type { AircraftSnapshot, AirportInfoDTO } from "@openatc/shared";
 
 /** Build the static airport DTO sent to clients on connect. */
@@ -24,11 +24,13 @@ export function toAirportInfo(airport: AirportPackage): AirportInfoDTO {
       type: n.type,
       position: projectToPlane(airport.reference, n.position),
     })),
+    // Ground geometry is already in tangent-plane nm — pass through.
+    ground: airport.ground ?? null,
   };
 }
 
 /** Convert an engine aircraft into a wire snapshot. */
-export function toSnapshot(engine: SimEngine, ac: Aircraft): AircraftSnapshot {
+export function toSnapshot(engine: SimEngine, ac: Aircraft, alert: AlertLevel = "none"): AircraftSnapshot {
   const { lat, lon } = engine.latLonOf(ac);
   return {
     id: ac.id,
@@ -54,5 +56,7 @@ export function toSnapshot(engine: SimEngine, ac: Aircraft): AircraftSnapshot {
     runway: ac.intent.runway,
     approachRunway: ac.clearedApproach?.runwayId ?? null,
     approachEstablished: ac.clearedApproach?.localizerCaptured ?? false,
+    alert,
+    phase: ac.phase,
   };
 }

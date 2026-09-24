@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import type { AircraftSnapshot, AirportInfoDTO, ServerMessage, ClientMessage } from "@openatc/shared";
+import type {
+  AircraftSnapshot,
+  AirportInfoDTO,
+  ServerMessage,
+  ClientMessage,
+  SessionStats,
+  SessionInfo,
+} from "@openatc/shared";
 
 const WS_URL = import.meta.env.VITE_WS_URL ?? `ws://${location.hostname}:8080`;
 /** HTTP base derived from the WS URL, used for the STT/TTS endpoints. */
@@ -9,7 +16,7 @@ export const TTS_URL = HTTP_BASE + "/tts";
 
 export interface TransmissionLine {
   id: number;
-  kind: "readback" | "error" | "system" | "pilot";
+  kind: "readback" | "error" | "system" | "pilot" | "alert";
   text: string;
 }
 
@@ -29,7 +36,11 @@ export interface SimState {
   /** True when the server offers Deepgram STT / TTS. */
   serverStt: boolean;
   serverTts: boolean;
+  stats: SessionStats;
+  session: SessionInfo;
   sendCommand: (text: string) => void;
+  sendMessage: (msg: ClientMessage) => void;
+  clearLog: () => void;
   /** Inject a local (client-side) line into the transmissions log. */
   pushSystem: (kind: TransmissionLine["kind"], text: string) => void;
 }
@@ -47,6 +58,8 @@ export function useSimSocket(options: SimSocketOptions = {}): SimState {
   const [log, setLog] = useState<TransmissionLine[]>([]);
   const [serverStt, setServerStt] = useState(false);
   const [serverTts, setServerTts] = useState(false);
+  const [stats, setStats] = useState<SessionStats>({ landings: 0, departures: 0, violations: 0, activeAlerts: 0 });
+  const [session, setSession] = useState<SessionInfo>({ controllers: [], paused: false, trafficCount: 0 });
   const wsRef = useRef<WebSocket | null>(null);
   const logId = useRef(0);
   const onVoiceRef = useRef(options.onVoice);
@@ -84,6 +97,14 @@ export function useSimSocket(options: SimSocketOptions = {}): SimState {
           case "state":
             setAircraft(msg.aircraft);
             setSimTime(msg.time);
+            setStats(msg.stats);
+            break;
+          case "conflict_alert":
+            // Separation is critical — always surfaced, regardless of frequency.
+            pushLog("alert", `⚠ ${msg.text}`);
+            break;
+          case "session":
+            setSession(msg.session);
             break;
           case "readback":
             // Only surface transmissions on the controller's selected frequency.
@@ -123,12 +144,28 @@ export function useSimSocket(options: SimSocketOptions = {}): SimState {
     };
   }, [pushLog]);
 
-  const sendCommand = useCallback((text: string) => {
+  const sendMessage = useCallback((msg: ClientMessage) => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    const msg: ClientMessage = { type: "command", text };
     ws.send(JSON.stringify(msg));
   }, []);
 
-  return { connected, airport, aircraft, simTime, log, serverStt, serverTts, sendCommand, pushSystem: pushLog };
+  const sendCommand = useCallback((text: string) => sendMessage({ type: "command", text }), [sendMessage]);
+  const clearLog = useCallback(() => setLog([]), []);
+
+  return {
+    connected,
+    airport,
+    aircraft,
+    simTime,
+    log,
+    serverStt,
+    serverTts,
+    stats,
+    session,
+    sendCommand,
+    sendMessage,
+    clearLog,
+    pushSystem: pushLog,
+  };
 }

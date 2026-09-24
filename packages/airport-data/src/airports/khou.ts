@@ -1,4 +1,5 @@
 import type { AirportPackage } from "../types.js";
+import { KHOU_GROUND } from "./khou-ground.js";
 
 /**
  * KHOU — William P. Hobby Airport, Houston, TX.
@@ -72,4 +73,5 @@ export const KHOU: AirportPackage = {
     { id: "TWR", label: "Tower", frequency: "118.700" },
     { id: "GND", label: "Ground", frequency: "121.900" },
   ],
+  ground: KHOU_GROUND,
 };

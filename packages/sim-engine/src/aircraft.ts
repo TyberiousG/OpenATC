@@ -24,6 +24,12 @@ export interface FlightIntent {
 export type FlightStatus = "active" | "landed" | "departed" | "exited";
 
 /**
+ * Movement phase. Ground phases are stationary or taxiing at slow speed at
+ * field elevation; "airborne" runs the full flight dynamics.
+ */
+export type FlightPhase = "ramp" | "taxi" | "hold" | "takeoff" | "airborne";
+
+/**
  * An active ILS approach clearance. Once the aircraft intercepts the localizer
  * it captures, then tracks the final approach course and glideslope down to the
  * runway on its own. Geometry is resolved (threshold on the plane, courses) when
@@ -71,6 +77,10 @@ export interface Aircraft {
   status: FlightStatus;
   /** Active ILS approach clearance, or null. */
   clearedApproach: ClearedApproach | null;
+  /** Movement phase (ground vs airborne). */
+  phase: FlightPhase;
+  /** Remaining taxi route (polyline of waypoints); empty when not taxiing. */
+  taxiRoute: Vec2[];
 }
 
 /** Performance model. Coarse but believable; not real aerodynamics. */
@@ -81,6 +91,12 @@ export const DYNAMICS = {
   verticalRateFpm: 1800,
   /** Airspeed change, knots per second. */
   accelKtPerSec: 1.5,
+  /** Ground taxi speed, knots. */
+  taxiSpeedKt: 15,
+  /** Takeoff roll acceleration, knots per second. */
+  takeoffAccelKtPerSec: 6,
+  /** Rotation speed — the aircraft lifts off once it reaches this on the roll. */
+  rotateSpeedKt: 140,
   /** Tolerances for considering a target "captured". */
   headingToleranceDeg: 0.5,
   altitudeToleranceFt: 20,
@@ -141,6 +157,21 @@ export function applyCommand(ac: Aircraft, cmd: Command): void {
  * holds until told otherwise.
  */
 export function stepAircraft(ac: Aircraft, dt: number): void {
+  // Ground phases move slowly (or not at all) at field elevation.
+  if (ac.phase === "ramp" || ac.phase === "hold") {
+    ac.speed = 0;
+    ac.verticalRate = 0;
+    return;
+  }
+  if (ac.phase === "taxi") {
+    taxiStep(ac, dt);
+    return;
+  }
+  if (ac.phase === "takeoff") {
+    takeoffRoll(ac, dt);
+    return;
+  }
+
   // An established approach overrides vectors and flies the aircraft down.
   const appr = ac.clearedApproach ? approachGuidance(ac) : null;
 
@@ -200,6 +231,49 @@ function approachGuidance(
   const altitude = Math.min(ac.altitude, gsAlt);
   const speed = Math.min(ac.assignedSpeed ?? ac.speed, APPROACH.speedKt);
   return { heading, altitude, speed };
+}
+
+/** Follow the taxi route waypoint by waypoint; hold once the route is done. */
+function taxiStep(ac: Aircraft, dt: number): void {
+  ac.verticalRate = 0;
+  let budget = (DYNAMICS.taxiSpeedKt * dt) / 3600; // nm this tick
+  ac.speed = ac.taxiRoute.length > 0 ? DYNAMICS.taxiSpeedKt : 0;
+  // May cross several short segments in one tick.
+  while (budget > 0 && ac.taxiRoute.length > 0) {
+    const target = ac.taxiRoute[0]!;
+    const dx = target.x - ac.position.x;
+    const dy = target.y - ac.position.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist <= 1e-9) {
+      ac.taxiRoute = ac.taxiRoute.slice(1);
+      continue;
+    }
+    ac.heading = bearingTo(ac.position, target);
+    if (dist <= budget) {
+      ac.position = { x: target.x, y: target.y };
+      ac.taxiRoute = ac.taxiRoute.slice(1);
+      budget -= dist;
+    } else {
+      ac.position.x += (dx / dist) * budget;
+      ac.position.y += (dy / dist) * budget;
+      budget = 0;
+    }
+  }
+  if (ac.taxiRoute.length === 0) {
+    ac.phase = "hold";
+    ac.speed = 0;
+  }
+}
+
+/** Accelerate down the runway on the ground; rotate (lift off) at rotate speed. */
+function takeoffRoll(ac: Aircraft, dt: number): void {
+  ac.verticalRate = 0;
+  ac.speed = Math.min(ac.speed + DYNAMICS.takeoffAccelKtPerSec * dt, DYNAMICS.rotateSpeedKt);
+  const distNm = (ac.speed * dt) / 3600;
+  const rad = (ac.heading * Math.PI) / 180;
+  ac.position.x += distNm * Math.sin(rad);
+  ac.position.y += distNm * Math.cos(rad);
+  if (ac.speed >= DYNAMICS.rotateSpeedKt) ac.phase = "airborne";
 }
 
 /** Heading the aircraft flies on its own when not being vectored. */

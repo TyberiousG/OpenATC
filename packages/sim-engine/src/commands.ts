@@ -12,7 +12,9 @@ export type Command =
   | { kind: "speed"; speed: number }
   | { kind: "contact"; position: string; frequency: string | null }
   | { kind: "squawk"; code: string }
-  | { kind: "approach"; runway: string | null };
+  | { kind: "approach"; runway: string | null; visual: boolean }
+  | { kind: "taxi"; runway: string | null; via: string[] }
+  | { kind: "takeoff"; runway: string | null };
 
 export type CommandKind = Command["kind"];
 
@@ -84,6 +86,8 @@ export function validateCommand(cmd: Command): ValidationError | null {
       return null;
     }
     case "approach":
+    case "taxi":
+    case "takeoff":
       // The runway (if given) is validated against the airport by the engine.
       return null;
   }
